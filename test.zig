@@ -356,6 +356,13 @@ test "-- pointers --" {
         const ptr: *allowzero i32 = @ptrFromInt(zero);
         try expect(@intFromPtr(ptr) == 0);
     } {
+        comptime {
+            const ptr: *i32 = @ptrFromInt(0xdeadbee0);
+            const addr = @intFromPtr(ptr);
+            try expect(@TypeOf(addr) == usize);
+            try expect(addr == 0xdeadbee0);
+        }
+    } {
         // comptime can use ptr
         comptime {
             var x: i32 = 1;
@@ -365,6 +372,34 @@ test "-- pointers --" {
             try expect(ptr.* == 3);
         }
     }
+}
+test "-- pointer casting --" {
+    const bytes2 align(@alignOf(u32)) = [_]u8{ 0x34, 0x34, 0x12, 0x12 };
+    const u32_ptr2: *const u32 = @ptrCast(&bytes2);
+    try expect(u32_ptr2.* == 0x12123434);
+
+    const bytes = [_]u8{ 0x12, 0x34, 0x56, 0x78 };
+    const u32_ptr: *const u32 = &@bitCast(bytes);
+    try expect(u32_ptr.* == 0x78563412);
+
+    const u32_value = std.mem.bytesAsSlice(u32, bytes[0..])[0];
+    try expect(u32_value == 0x78563412);
+
+    try expect(@as(u32, @bitCast(bytes)) == 0x78563412);
+
+    try expect(@typeInfo(@TypeOf(u32_ptr)).Pointer.child == u32);
+}
+test "-- pointer alignment safety --" {
+    var array align(4) = [_]u32{ 0x11111111, 0x11111111 };
+    const bytes = mem.sliceAsBytes(array[0..]);
+    const slice4 = bytes[1..5];
+    const int_slice = mem.bytesAsSlice(u32, slice4[0..]);
+    try expect(int_slice[0] == 0x11111111);
+}
+test "-- allowzero pointer --" {
+    var zero: usize = 0; _ = &zero;
+    const ptr: *allowzero i32 = @ptrFromInt(zero);
+    try expect(@intFromPtr(ptr) == 0);
 }
 test "-- align alignOf alignment--" {
     var x: i32 = 1234;
@@ -388,8 +423,13 @@ test "-- align alignOf alignment--" {
     try expect(as_unaligned_slice[0] == 100);
 
     try expect(derp() == 1234);
-    //try expect(@TypeOf(noop1) == fn()align(1) void);
-    //try expect(@TypeOf(noop4) == fn()align(4) void);
+    try expect(@typeInfo(*u32).Pointer.child == u32);
+    noop1();
+    try expect(@TypeOf(noop1) == fn () void);
+    try expect(@TypeOf(&noop1) == *align(1) const fn () void);
+    noop4();
+    try expect(@TypeOf(noop4) == fn () void);
+    try expect(@TypeOf(&noop4) == *align(4) const fn () void);
 }
 fn derp() align(@sizeOf(usize)*2) i32 { return 1234; }
 fn noop1() align(1) void {}
@@ -1484,6 +1524,33 @@ test "-- packed struct size --" {
     };
     try expect(@bitSizeOf(@TypeOf(state)) == 5);
 }
+test "-- pointer arithmetic with many-item pointer and slice --" {
+    const array = [_]i32{ 1, 2, 3, 4 };
+    var ptr: [*]const i32 = &array;
+    try expect(ptr[0] == 1);
+    ptr += 1;
+    try expect(ptr[0] == 2);
+    try expect(ptr[1..] == ptr + 1);
+
+    var start: usize = 0; _ = &start;
+    var slice = array[start..array.len];
+    try expect(slice[0] == 1);
+    try expect(slice.len == 4);
+    slice.ptr += 1;
+    try expect(slice[0] == 2);
+    try expect(slice.len == 4);
+}
+test "pointer slicing" {
+    var array = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    var start: usize = 2; // var to make it runtime-known
+    _ = &start; // suppress 'var is never mutated' error
+    const slice = array[start..4];
+    try expect(slice.len == 2);
+
+    try expect(array[3] == 4);
+    slice[1] += 1;
+    try expect(array[3] == 5);
+}
 test "-- bit aligned pointers --" {
     var x = MoveMentState {
         .running = false,
@@ -1654,14 +1721,15 @@ test "-- inline else switch --" {
         inline else => print("\nI dont know direction! ",.{}),
     }
 }
-//pub extern "c" fn printf(format: [*:0]const u8, ...) c_int;
+pub extern "c" fn printf(format: [*:0]const u8, ...) c_int;
 test "-- cImport cInclude and call c function --" {
     //var a: [32]u8 = .{0} ** 32;
     //var a = [_]u8{0} ** 32;
     var a = [1:0]u8{0} ** 32;
     _ = cc.sprintf(@ptrCast(&a), "===Hello c world!===");
     print("\n{s} std.debug.print", .{a});
-    _ = std.c.printf("%s std.c.printf", &a);
+    //_ = std.c.printf("%s std.c.printf", &a);
+    _ = printf("%s std.c.printf", &a);
 }
 test "-- bit manipulation -- " {
     //const numOne: u8 = 15;        //   =  0000 1111
@@ -2024,6 +2092,52 @@ test "-- itoa atoi parseInt --" {
     try expectEqual(@as(i2, -2), try parseInt(i2, "-10", 2));
     try expectEqual(@as(i4, -8), try parseInt(i4, "-10", 8));
     try expectEqual(@as(i5, -16), try parseInt(i5, "-10", 16));
+}
+test "-- parseFloat --" {
+    inline for ([_]type{ f16, f32, f64, f128 }) |T| {
+        try expectError(error.InvalidCharacter, parseFloat(T, ""));
+        try expectError(error.InvalidCharacter, parseFloat(T, "   1"));
+        try expectError(error.InvalidCharacter, parseFloat(T, "1abc"));
+        try expectError(error.InvalidCharacter, parseFloat(T, "+"));
+        try expectError(error.InvalidCharacter, parseFloat(T, "-"));
+
+        try expectEqual(try parseFloat(T, "0"), 0.0);
+        try expectEqual(try parseFloat(T, "0."), 0.0);
+        try expectEqual(try parseFloat(T, "+0"), 0.0);
+        try expectEqual(try parseFloat(T, "-0"), 0.0);
+
+        try expectEqual(try parseFloat(T, "0e0"), 0);
+        try expectEqual(try parseFloat(T, "2e3"), 2000.0);
+        try expectEqual(try parseFloat(T, "1e0"), 1.0);
+        try expectEqual(try parseFloat(T, "-2e3"), -2000.0);
+        try expectEqual(try parseFloat(T, "-1e0"), -1.0);
+        try expectEqual(try parseFloat(T, "1.234e3"), 1234);
+
+        const epsilon = comptime math.floatEps(T);
+        //const min_value = comptime math.floatMin(T);
+        try expect(math.approxEqAbs(T, try parseFloat(T, "3.141"), 3.141, epsilon));
+        try expect(math.approxEqAbs(T, try parseFloat(T, "-3.141"), -3.141, epsilon));
+
+        try expectEqual(try parseFloat(T, "1e-5000"), 0);
+        try expectEqual(try parseFloat(T, "1e+5000"), std.math.inf(T));
+
+        try expectEqual(try parseFloat(T, "0.4e0066999999999999999999999999999999999999999999999999999"), std.math.inf(T));
+        try expect(math.approxEqAbs(T, try parseFloat(T, "0_1_2_3_4_5_6.7_8_9_0_0_0e0_0_1_0"), @as(T, 123456.789000e10), epsilon));
+
+        try expectError(error.InvalidCharacter, parseFloat(T, "0123456.789000e_0010")); // cannot occur immediately after exponent
+        try expectError(error.InvalidCharacter, parseFloat(T, "_0123456.789000e0010")); // cannot occur before any digits
+        try expectError(error.InvalidCharacter, parseFloat(T, "0__123456.789000e_0010")); // cannot occur twice in a row
+        try expectError(error.InvalidCharacter, parseFloat(T, "0123456_.789000e0010")); // cannot occur before decimal point
+        try expectError(error.InvalidCharacter, parseFloat(T, "0123456.789000e0010_")); // cannot occur at end of number
+        try expectError(error.InvalidCharacter, parseFloat(T, ".")); // At least one digit is required.
+        try expectError(error.InvalidCharacter, parseFloat(T, ".e1")); // At least one digit is required.
+        try expectError(error.InvalidCharacter, parseFloat(T, "0.e")); // At least one digit is required.
+
+        try expect(math.approxEqAbs(T, try parseFloat(T, "123142.1"), 123142.1, epsilon));
+        try expect(math.approxEqAbs(T, try parseFloat(T, "-123142.1124"), @as(T, -123142.1124), epsilon));
+        try expect(math.approxEqAbs(T, try parseFloat(T, "0.7062146892655368"), @as(T, 0.7062146892655368), epsilon));
+        try expect(math.approxEqAbs(T, try parseFloat(T, "2.71828182845904523536"), @as(T, 2.71828182845904523536), epsilon));
+    }
 }
 test "-- parseIntSizeSuffix --" {
     try expect(try parseIntSizeSuffix("2", 10) == 2);
