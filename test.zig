@@ -28,6 +28,7 @@ const expectEqual = std.testing.expectEqual;
 const expectEqualSlices = std.testing.expectEqualSlices;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
+//@divExact这些编译期函数结果只有整数!!!
 //判断加|xx|后判断?type就跟c语言一样,非null为true: while/if/..(?i32)|val|
 //pub fn print(self: Insect) void {
     //switch (self) {
@@ -136,7 +137,7 @@ test "-- while with break, continue and expression--" {
     try expect(sum == 1);
 }
 test "-- for loops --" {
-    const str = [3]u8{'a', 'b', 'c'};
+    var str = [3]u8{'a', 'b', 'c'};
     const str2 = [_]u8{'d', 'e', 'f'};
     const xx: u8 = for(str)|_| break 2 else 0;
     _ = xx;
@@ -145,12 +146,10 @@ test "-- for loops --" {
     for(str, str2)|s1, s2| {
         try expect((s1+3) == s2);
     }
-    for(str, 0..)|chr, idx| {
-        _ = chr;
-        _ = idx;
-    }
-    for (str) |chr| {
-        _ = chr;
+    for(&str, 0..)|*chr, idx| {
+        if(idx == 2) chr.* = 'g';
+        _ = &chr;
+        _ = &idx;
     }
     for (str, 0..)|_, idx| {
         _ = idx;
@@ -468,7 +467,12 @@ const Mode = enum {
     on,
     off,
 };
-test "-- enums --" {
+test "-- enums @tagName --" {
+    try expect(eql(u8, @tagName(Value.zero), "zero"));
+    try expect(eql(u8, @tagName(Value2.handred), "handred"));
+    try expect(eql(u8, @tagName(Suit.hearts), "hearts"));
+    try expect(eql(u8, @tagName(Mode.off), "off"));
+
     try expect(@intFromEnum(Value.zero) == 0);
     try expect(@intFromEnum(Value.one) == 1);
     try expect(@intFromEnum(Value.two) == 2);
@@ -532,17 +536,39 @@ test "-- switch on tagged union -- " {
 }
 test "-- int widening --" {
     const x: u64 = 255;
-    //var y = @as(u8, @intCast(x));
+    const xx: u8 = @intCast(x);
+    try expect(xx == 255);
     var y = @as(u8, x);
     try expect(@TypeOf(y) == u8);
-    y +%= 1;
+    y +%= 1; // 255 +% 1 = 0
     try expect(y == 0);
+    y -%= 1; // 0 -% 1 = 255
+    try expect(y == 255);
+    y *%= 2; // 255 +% 255 = 254
+    try expect(y == 254);
+    y +|= 2; // 254 +| n = 255
+    try expect(y == 255); y = 0;
+    y -|= 1; // 0 -| n = 0
+    try expect(y == 0); y = 255;
+    y *|= 2; // 255 *| n = 255
+    try expect(y == 255); y = 1;
+    y <<|= 100; // 255 <<| n = 255
+    try expect(y == 255);
+
+    const z: u64 = 0xffffff10;
+    const zz: u8 = @truncate(z);
+    try expect(zz == 16);
 }
 test "-- float widening --" {
     const a: i32 = 0;
     const b: f32 = a;
     const c: f128 = b;
     try expect(c == @as(f128, a));
+    const fmax: f64 = math.floatMax(f64);
+    @setFloatMode(.optimized);
+    const finf: f32 = @floatCast(fmax);
+    try expect(finf == math.inf(f32));
+    //@compileLog(ff);
     //const floating_point: f64 = 123.0E+77;
     //const another_float: f64 = 123.0;
     //const yet_another: f64 = 123.0e+77;
@@ -594,8 +620,9 @@ fn rangeHasNumber(begin: usize, end: usize, number: usize) bool{
         }
     } else false;
 }
-test "-- while loop expression --" {
+test "-- while loop expression & @call fn --" {
     try expect(rangeHasNumber(0, 10, 3));
+    try expect(@call(.auto, rangeHasNumber, .{0, 10, 3}));
 }
 test "-- optional and orelse -- " {
     var found_idx: ?usize = null;
@@ -794,10 +821,6 @@ test "-- while error union capture --" {
     }
     try expect(sum == 3);
 }
-test "-- for capture --" {
-    const x = [_]i8{1,5,120,-5};
-    for(x)|v| try expect(@TypeOf(v) == i8);
-}
 const Info = union(enum) {
     a: u32,
     b: []const u8,
@@ -956,6 +979,13 @@ test "-- @vector --" {
     // result is { true, false, true, false };
     const is_all_true = @reduce(.And, result);
     try expect(is_all_true == false);
+    const is_min = @reduce(.Min, V{10, 2, 6, 4});
+    try expect(is_min == 2);
+    const result_add = @reduce(.Add, V{10, 2, 6, 4});
+    try expect(result_add == 22);
+    const result_mul = @reduce(.Mul, V{2, 2, 2, 2});
+    try expect(result_mul == 16);
+
     // shuffle
     const aa = @Vector(7, u8){ 'o', 'l', 'h', 'e', 'r', 'z', 'w' };
     const bb = @Vector(4, u8){ 'w', 'd', '!', 'x' };
@@ -1609,7 +1639,7 @@ test "-- @field get var --" {
     const pname = &a.name;
     try expect(eql(u8, a.name, "a_user"));
     try expect(@field(@This(), "a_user").age == 6);
-    const a_ptr = @fieldParentPtr(User1, "name", pname);
+    const a_ptr: *const User1 = @fieldParentPtr("name", pname);
     try expect(a_ptr.age == a.age);
 
     const aaa = ("a_user")[0..];
@@ -1899,6 +1929,8 @@ test "-- *T to *[1]T --" {
 }
 test "-- @typeName --" {
     print("\n===typeName = {s} ", .{@typeName(@TypeOf( &[_][]const u8{"www", "222"}))});
+    // ===typeName = *const [2][]const u8
+    try expect(eql(u8, @typeName(i32), "i32"));
 }
 test "-- replace -- " {
     //var output = [_]u8{0} ** 32;
@@ -1922,14 +1954,14 @@ test "-- rotate --" {
     try expect(eql(i32, &arr, &[_]i32{3,4,5,1,2}));
 }
 test "-- minMax indexOfMinMax --" {
-    var minimum = mem.min(u8, "abcdefg");
-    var maximum = mem.max(u8, "abcdefg");
+    const minimum = mem.min(u8, "abcdefg");
+    const maximum = mem.max(u8, "abcdefg");
     try expectEqual(@as(u8, 'a'), minimum);
     try expectEqual(@as(u8, 'g'), maximum);
-    //return .{ minimum, maximum };
-    minimum, maximum = mem.minMax(u8, "bcdef");
-    try expectEqual(@as(u8, 'b'), minimum);
-    try expectEqual(@as(u8, 'f'), maximum);
+
+    const minmax = mem.minMax(u8, "bcdef");
+    try expectEqual('b', minmax[0]);
+    try expectEqual('f', minmax[1]);
 
     try expectEqual(mem.indexOfMin(u8,"abcdefg"), 0);
     try expectEqual(mem.indexOfMin(u8,"gbcdefa"), 6);
@@ -2149,5 +2181,46 @@ test "-- parseIntSizeSuffix --" {
     try expect(try parseIntSizeSuffix("aKiB", 16) == 10240);
     try expect(parseIntSizeSuffix("", 10) == error.InvalidCharacter);
     try expect(parseIntSizeSuffix("2iB", 10) == error.InvalidCharacter);
+}
+test "-- clamp --" {
+    try expect(math.clamp(@as(i32, -1), @as(i32, -4), @as(i32, 7)) == -1);
+    try expect(math.clamp(@as(i32, -5), @as(i32, -4), @as(i32, 7)) == -4);
+    try expect(math.clamp(@as(i32, 8), @as(i32, -4), @as(i32, 7)) == 7);
+
+    try expect(math.clamp(@as(f32, 1.1), @as(f32, 0.0), @as(f32, 1.0)) == 1.0);
+    try expect(math.clamp(@as(f32, -127.5), @as(f32, -200), @as(f32, -100)) == -127.5);
+    // Mix of comptime and non-comptime
+    var i: i32 = 1; _ = &i;
+    try testing.expect(std.math.clamp(i, 0, 1) == 1);
+}
+test "-- @floor @ceil @trunc @round --" {
+    try expect(@floor(5.99999) == 5);
+    try expect(@ceil(5.11111) == 6);
+    try expect(@trunc(5.99999) == 5);
+    try expect(@round(5.4) == 5);
+    try expect(@round(5.5) == 6);
+}
+test "-- @unionInit can modify a pointer value --" {
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest; // TODO
+    const UnionInitEnum = union(enum) {
+        Boolean: bool,
+        Byte: u8,
+    };
+    var value: UnionInitEnum = undefined;
+    const value_ptr = &value;
+
+    value_ptr.* = @unionInit(UnionInitEnum, "Boolean", true);
+    try expect(value.Boolean == true);
+
+    value_ptr.* = @unionInit(UnionInitEnum, "Byte", 2);
+    try expect(value.Byte == 2);
+}
+test "-- math Overflow --" {
+    var byte: u8 = 255;
+    byte = if (math.add(u8, byte, 1)) |result| result else |err| blk: {
+        print("unable to add one: {s}!!! ", .{@errorName(err)});
+        break :blk 66;
+    };
+    try expect(byte == 66);
 }
 
