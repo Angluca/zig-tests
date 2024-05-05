@@ -37,7 +37,7 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 //}
 /// test generate documentation
 pub fn main() void {
-    @compileLog("echo everything type", main);
+    //@compileLog("echo everything type", main);
     //std.debug.print("test:({any}), world:({?})!!!!", .{@typeInfo(u8), @TypeOf("world")});
 
 //    const a: [5]u8 = "array".*;
@@ -344,6 +344,7 @@ test "-- pointers --" {
         //print("=={any}==\n", .{@TypeOf(msgs[0..][0])});
     } {
         // function pointer
+        //const EchoFn = @TypeOf(&echos);
         const EchoFn = *const fn(msgs:[*][]const u8) void;
         const echofn: EchoFn = echos;
         //const echofn = echos;
@@ -731,7 +732,8 @@ fn Vec(comptime n: comptime_int, comptime T: type,) type {
         fn abs(self: Self) Self {
             var tmp = Self{.data = undefined,};
             for(self.data, 0..)|elem, i| {
-                tmp.data[i] = if(elem < 0) -elem else elem;
+                //tmp.data[i] = if(elem < 0) -elem else elem;
+                tmp.data[i] = @abs(elem);
             }
             return tmp;
         }
@@ -2222,5 +2224,45 @@ test "-- math Overflow --" {
         break :blk 66;
     };
     try expect(byte == 66);
+}
+test "-- destructure array --" {
+    var z: u32 = undefined;
+    const x, var y, z = [3]u32{ 1, 2, 3 };
+    y += 10;
+    try expectEqual(1, x);
+    try expectEqual(12, y);
+    try expectEqual(3, z);
+}
+test "-- destructure vector --" {
+    // Comptime-known values are propagated as you would expect.
+    const x, const y = @Vector(2, u32){ 1, 2 };
+    comptime assert(x == 1);
+    comptime assert(y == 2);
+}
+test "-- destructure tuple --" {
+    var runtime: u32 = undefined;
+    runtime = 123;
+    const x, const y = .{ 42, runtime };
+    // The first tuple field is a `comptime` field, so `x` is comptime-known even
+    // though `y` is runtime-known.
+    comptime assert(x == 42);
+    try expectEqual(123, y);
+}
+test "-- @errorCast error set" {
+    const err: error{Foo, Bar} = error.Foo;
+    const casted: error{Foo} = @errorCast(err);
+    try testing.expectEqual(error.Foo, casted);
+}
+
+test "-- @errorCast error union" {
+    const err: error{Foo, Bar}!u32 = error.Foo;
+    const casted: error{Foo}!u32 = @errorCast(err);
+    try testing.expectError(error.Foo, casted);
+}
+
+test "-- @errorCast error union payload" {
+    const err: error{Foo, Bar}!u32 = 123;
+    const casted: error{Foo}!u32 = @errorCast(err);
+    try testing.expectEqual(123, casted);
 }
 
